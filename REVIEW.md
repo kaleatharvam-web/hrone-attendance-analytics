@@ -1,0 +1,18 @@
+# REVIEW.md
+
+| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
+|---|---|---|---|---|
+| 1 | `health()` | Static dictionary returned without checking MongoDB reachability. Violates contract requiring 503 during DB outage. | Terminate MongoDB process; `/health` continued returning 200 OK. | Replaced with `client.admin.command('ping')` inside a try-except block, raising HTTP 503 on error. |
+| 2 | `compute_late_minutes()` | Incorrect grace boundary and minute floor logic. Strict condition `> 10:00` violated on second boundary. | Punching at `09:40:01` on `09:30` shift gave 0 instead of 10 minutes. | Calculated elapsed seconds; applied `diff // 60` only when `diff > 600`. |
+| 3 | `compute_overtime()` | Missing overnight shift boundary and failed to enforce R3 threshold (at least 30 minutes). | Punch-out with 25 minutes surplus yielded 25 instead of 0. | Added overnight calendar check and filtered minutes to 0 if `< 30`. |
+| 4 | Startup index creation | No indexes registered in MongoDB at initialization. Missing compound unique constraints. | Concurrency tests allowed duplicate entries for `(emp_code, date)`. | Added `@app.on_event("startup")` executing idempotent index definitions. |
+| 5 | `create_employee()` | Naive datetime stored and returned as string instead of epoch milliseconds. | Instant contract validation failed due to missing epoch milliseconds format. | Stored UTC BSON datetime with zeroed microseconds, returned integer milliseconds. |
+| 6 | `list_employees()` | Offset formula `skip = page * page_size` skipped page 1 entirely. Total count ignored filter. | Calling `page=1` skipped first 20 records; total count showed global collection count. | Changed to `(page - 1) * page_size`, applied query filter to `count_documents`, sorted by `emp_code`. |
+| 7 | `punch_in()` timezone handling | Used local host timezone instead of IST (UTC+05:30), breaking overnight shifts (R1). | Shift starting 22:00 with punch at 01:00 AM resolved to current day instead of previous shift day. | Converted instants explicitly to IST and mapped early morning logs to previous calendar date. |
+| 8 | `punch_in()` concurrency race | Relied on application-level `find_one` before write. Race conditions permitted double punch-in. | Concurrent parallel POST requests returned multiple 201 responses. | Enforced compound unique index `(emp_code, date)` and caught `DuplicateKeyError` to return HTTP 409. |
+| 9 | `list_attendance()` memory handling | Full document collection fetched in Python memory and sorted locally. Memory leak at scale. | Tested with 100k records; query timed out and triggered out-of-memory errors. | Delegated sorting and pagination directly to MongoDB engine via native cursor methods. |
+| 10 | Response payload `_id` leak | Exposing internal MongoDB `_id` as synthetic `id` field in JSON output. | OpenAPI contract validation failed on unexpected `id` property. | Stripped internal `_id` entirely and strictly conformed to contract output keys. |
+| 11 | Validation on instants | Non-integer timestamps (floats, ISO strings) accepted without standard 422 failure. | Request payload with millisecond float was processed instead of throwing 422. | Implemented custom Pydantic field validators enforcing integer type for all epoch instants. |
+
+### Examined and confirmed not a defect
+- Preserving shift times (`shift_start`, `shift_end`) as `"HH:MM"` 24-hour strings in the schema correctly aligns with the seeded dataset and contract requirements, so converting them to stored minute offsets was deliberately avoided.
